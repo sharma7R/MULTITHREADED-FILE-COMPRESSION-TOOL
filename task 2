@@ -1,0 +1,76 @@
+#include <iostream>
+#include <fstream>
+#include <vector>
+#include <thread>
+#include <zlib.h>
+#include <chrono>
+
+#define CHUNK 16384  // Chunk size for processing
+
+void compressChunk(const std::vector<unsigned char>& input, std::vector<unsigned char>& output) {
+    uLongf destLen = compressBound(input.size());
+    output.resize(destLen);
+    compress(output.data(), &destLen, input.data(), input.size());
+    output.resize(destLen);
+}
+
+void decompressChunk(const std::vector<unsigned char>& input, std::vector<unsigned char>& output, uLongf origSize) {
+    output.resize(origSize);
+    uncompress(output.data(), &origSize, input.data(), input.size());
+    output.resize(origSize);
+}
+
+void processFile(const std::string& inputFile, const std::string& outputFile, bool isCompress) {
+    std::ifstream file(inputFile, std::ios::binary);
+    std::ofstream outFile(outputFile, std::ios::binary);
+    if (!file || !outFile) {
+        std::cerr << "Error opening files!" << std::endl;
+        return;
+    }
+
+    std::vector<std::thread> threads;
+    std::vector<std::vector<unsigned char>> chunks, results;
+    std::vector<uLongf> originalSizes;
+    
+    while (!file.eof()) {
+        std::vector<unsigned char> chunk(CHUNK);
+        file.read(reinterpret_cast<char*>(chunk.data()), CHUNK);
+        size_t bytesRead = file.gcount();
+        if (bytesRead == 0) break;
+        chunk.resize(bytesRead);
+        chunks.push_back(chunk);
+        results.emplace_back();
+        originalSizes.push_back(bytesRead);
+    }
+
+    auto start = std::chrono::high_resolution_clock::now();
+
+    for (size_t i = 0; i < chunks.size(); ++i) {
+        if (isCompress) {
+            threads.emplace_back(compressChunk, std::ref(chunks[i]), std::ref(results[i]));
+        } else {
+            threads.emplace_back(decompressChunk, std::ref(chunks[i]), std::ref(results[i]), originalSizes[i]);
+        }
+    }
+
+    for (auto& th : threads) th.join();
+
+    auto end = std::chrono::high_resolution_clock::now();
+    std::cout << (isCompress ? "Compression" : "Decompression") << " Time: " 
+              << std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count() << " ms\n";
+    
+    for (const auto& res : results) {
+        outFile.write(reinterpret_cast<const char*>(res.data()), res.size());
+    }
+}
+
+int main(int argc, char* argv[]) {
+    if (argc != 4) {
+        std::cerr << "Usage: " << argv[0] << " <c/d> <input_file> <output_file>" << std::endl;
+        return 1;
+    }
+
+    bool isCompress = (argv[1][0] == 'c');
+    processFile(argv[2], argv[3], isCompress);
+    return 0;
+}
